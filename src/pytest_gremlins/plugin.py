@@ -1339,11 +1339,31 @@ def main():
             code = compile(self._source, self._module_name, 'exec')
             run_code(code, module.__dict__)
 
+    def package_paths(fullname, path, target, gremlin_finder_type):
+        # Ask the real import system where this package's children live.
+        # Returns None for a plain module, which is what ModuleSpec assumes
+        # already, so a non-package is left exactly as it was.
+        for finder in sys.meta_path:
+            if isinstance(finder, gremlin_finder_type):
+                continue
+            try:
+                spec = finder.find_spec(fullname, path, target)
+            except (AttributeError, ImportError, ValueError):
+                continue
+            if spec is not None and spec.submodule_search_locations is not None:
+                return list(spec.submodule_search_locations)
+        return None
+
     class GremlinFinder(MetaPathFinder):
         def find_spec(self, fullname, path, target=None):
             if fullname in instrumented_sources:
                 loader = GremlinLoader(instrumented_sources[fullname], fullname)
-                return ModuleSpec(fullname, loader)
+                spec = ModuleSpec(fullname, loader)
+                # submodule_search_locations is what marks a module as a
+                # package. Without it an instrumented __init__.py stops being
+                # one, and every import beneath it raises ModuleNotFoundError.
+                spec.submodule_search_locations = package_paths(fullname, path, target, GremlinFinder)
+                return spec
             return None
 
     # Register finder at the START of meta_path
@@ -1409,11 +1429,31 @@ def setup_import_hooks():
             code = compile(self._source, self._module_name, 'exec')
             run_code(code, module.__dict__)
 
+    def package_paths(fullname, path, target, gremlin_finder_type):
+        # Ask the real import system where this package's children live.
+        # Returns None for a plain module, which is what ModuleSpec assumes
+        # already, so a non-package is left exactly as it was.
+        for finder in sys.meta_path:
+            if isinstance(finder, gremlin_finder_type):
+                continue
+            try:
+                spec = finder.find_spec(fullname, path, target)
+            except (AttributeError, ImportError, ValueError):
+                continue
+            if spec is not None and spec.submodule_search_locations is not None:
+                return list(spec.submodule_search_locations)
+        return None
+
     class GremlinFinder(MetaPathFinder):
         def find_spec(self, fullname, path, target=None):
             if fullname in instrumented_sources:
                 loader = GremlinLoader(instrumented_sources[fullname], fullname)
-                return ModuleSpec(fullname, loader)
+                spec = ModuleSpec(fullname, loader)
+                # submodule_search_locations is what marks a module as a
+                # package. Without it an instrumented __init__.py stops being
+                # one, and every import beneath it raises ModuleNotFoundError.
+                spec.submodule_search_locations = package_paths(fullname, path, target, GremlinFinder)
+                return spec
             return None
 
     sys.meta_path.insert(0, GremlinFinder())
