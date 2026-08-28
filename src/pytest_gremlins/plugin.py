@@ -1424,7 +1424,9 @@ def _get_lightweight_runner_script() -> str:
     return '''#!/usr/bin/env python
 """Lightweight test runner for pytest-gremlins — skips full pytest startup."""
 
+import asyncio
 import importlib.util
+import inspect
 import json
 import os
 import sys
@@ -1501,6 +1503,19 @@ def load_test_module(file_path):
     return module
 
 
+def run_callable(test_callable):
+    """Call a test and drive it to completion if it turns out to be async.
+
+    An ``async def`` test returns a coroutine without executing its body, so
+    calling it and discarding the result runs no assertions at all. Every such
+    test would report as passing, and every gremlin covered only by async tests
+    would report as surviving.
+    """
+    result = test_callable()
+    if inspect.iscoroutine(result):
+        asyncio.run(result)
+
+
 def run_test(test_spec, rootdir):
     """Run a single test from its node ID. Returns True if passed."""
     parts = test_spec.split('::')
@@ -1520,12 +1535,12 @@ def run_test(test_spec, rootdir):
             method = getattr(instance, parts[2], None)
             if method is None:
                 return False  # Cannot verify = treat as caught
-            method()
+            run_callable(method)
         elif len(parts) == 2:
             func = getattr(module, parts[1], None)
             if func is None:
                 return False  # Cannot verify = treat as caught
-            func()
+            run_callable(func)
         else:
             return False  # Unexpected node ID format = treat as caught
 
