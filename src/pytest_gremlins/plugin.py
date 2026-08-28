@@ -1632,6 +1632,12 @@ def _dispatch_mutation_run(
     return _run_mutation_testing(session, gremlin_session)
 
 
+# Display labels appended by pytest-test-categories, which separates the label
+# from the node ID with a space. Anchored and whitespace-required so an
+# ordinary uppercase parametrisation ID cannot match.
+_TEST_CATEGORY_LABEL = re.compile(r'\s+\[(?:SMALL|MEDIUM|LARGE|XLARGE)\]\s*$')
+
+
 def _make_node_ids_relative(node_ids: list[str], rootdir: Path) -> list[str]:
     """Convert pytest node IDs to be relative to rootdir.
 
@@ -1639,8 +1645,9 @@ def _make_node_ids_relative(node_ids: list[str], rootdir: Path) -> list[str]:
     pytester fixture). This function converts them to relative paths so they
     work correctly when running pytest from within rootdir.
 
-    Also strips any suffixes added by plugins (e.g., pytest-test-categories
-    adds "[SMALL]" suffix) since these are display-only decorations.
+    Also strips the display-only size label appended by pytest-test-categories,
+    which is not a valid node ID when handed back to pytest. Parametrisation IDs
+    are preserved, including uppercase ones such as "[GB]".
 
     Args:
         node_ids: List of pytest node IDs, which may include absolute paths.
@@ -1651,9 +1658,17 @@ def _make_node_ids_relative(node_ids: list[str], rootdir: Path) -> list[str]:
     """
     relative_node_ids = []
     for node_id in node_ids:
-        # Strip any plugin-added suffixes like "[SMALL]", "[MEDIUM]", etc.
-        # These are display decorations, not part of the actual node ID
-        cleaned_node_id = re.sub(r'\s*\[[A-Z]+\]\s*$', '', node_id)
+        # Strip a display suffix added by pytest-test-categories, which is not
+        # valid when handed back to pytest.
+        #
+        # The whitespace is required, and the labels are named explicitly,
+        # because neither is optional in practice: pytest-test-categories
+        # appends its label after a space, while pytest's own parametrisation
+        # never does. Matching any bracketed uppercase token with optional
+        # whitespace also matches an ordinary parametrisation ID -- '[GB]',
+        # '[WEBP]', '[USD]' -- and stripping one silently breaks test selection
+        # for every gremlin those tests cover.
+        cleaned_node_id = _TEST_CATEGORY_LABEL.sub('', node_id)
 
         # Node IDs have format: path/to/file.py::test_name
         # or just: file.py::test_name
