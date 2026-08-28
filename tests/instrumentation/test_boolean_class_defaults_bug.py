@@ -65,6 +65,10 @@ def test_explicit_last_true():
 
         result = pytester_with_markers.runpytest_subprocess(
             '--gremlins',
+            # Coverage-guided selection collects nothing under pytester, so
+            # these runs have always executed the whole suite per mutant via
+            # the fallback. Say so, rather than relying on an empty map.
+            '--gremlin-no-coverage-filter',
             '--gremlin-operators=boolean',
             '--gremlin-targets=target_module.py',
             '-v',
@@ -121,6 +125,10 @@ def test_make_default_range_from0_is_true():
 
         result = pytester_with_markers.runpytest_subprocess(
             '--gremlins',
+            # Coverage-guided selection collects nothing under pytester, so
+            # these runs have always executed the whole suite per mutant via
+            # the fallback. Say so, rather than relying on an empty map.
+            '--gremlin-no-coverage-filter',
             '--gremlin-operators=boolean',
             '--gremlin-targets=target_module.py',
             '-v',
@@ -162,6 +170,10 @@ def test_default_config_debug_is_false():
 
         result = pytester_with_markers.runpytest_subprocess(
             '--gremlins',
+            # Coverage-guided selection collects nothing under pytester, so
+            # these runs have always executed the whole suite per mutant via
+            # the fallback. Say so, rather than relying on an empty map.
+            '--gremlin-no-coverage-filter',
             '--gremlin-operators=boolean',
             '--gremlin-targets=target_module.py',
             '-v',

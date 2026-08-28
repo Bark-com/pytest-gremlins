@@ -36,7 +36,6 @@ from typing import (
     TYPE_CHECKING,
     Protocol,
 )
-import warnings
 
 import coverage
 import pytest
@@ -1706,13 +1705,23 @@ def _collect_coverage(gremlin_session: GremlinSession, rootdir: Path) -> None:
         preserved_addopts=gremlin_session.preserved_addopts,
     )
 
-    if not coverage_data:
-        warnings.warn(
-            'Coverage collection returned no data. '
-            'If you have --cov in pytest addopts, this may interfere with '
-            "gremlins' coverage-guided test selection. "
-            'See https://github.com/mikelane/pytest-gremlins/issues/113',
-            stacklevel=1,
+    if not coverage_data and relative_node_ids and not gremlin_session.no_coverage_filter:
+        # Nothing downstream can recover from this. Coverage-guided selection
+        # picks each gremlin's tests out of this map, so an empty map means
+        # every gremlin is classified without a single test having executed —
+        # and the run still prints a mutation score. Reporting that as a
+        # confident percentage is worse than not running at all, because it
+        # reads as a passing gate.
+        pytest.exit(
+            f'pytest-gremlins: coverage collection returned no data for {len(relative_node_ids)} test(s), '
+            'so no tests would run against any mutation and the resulting score would be meaningless.\n'
+            'Common causes:\n'
+            '  - the pre-scan exceeded its timeout: raise --gremlin-coverage-timeout or '
+            '[tool.pytest-gremlins].coverage_timeout\n'
+            '  - --cov in addopts interfering with coverage-guided selection: '
+            'see https://github.com/mikelane/pytest-gremlins/issues/113\n'
+            'Pass --gremlin-no-coverage-filter to run without coverage-guided selection.',
+            returncode=1,
         )
 
     gremlin_paths_map: dict[str, str] = {}
