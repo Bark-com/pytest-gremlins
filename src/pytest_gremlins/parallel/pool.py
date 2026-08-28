@@ -208,8 +208,14 @@ class WorkerPool:
         exc_val: BaseException | None,
         exc_tb: object,
     ) -> None:
-        """Exit the context manager, shutting down the pool."""
-        self.shutdown(wait=True)
+        """Exit the context manager, shutting down the pool.
+
+        A clean exit waits for the workers. An exception propagating out of the
+        block does not: the reason for leaving early is often a worker that has
+        stopped answering, and waiting on it would block in exactly the place
+        the caller was trying to escape.
+        """
+        self.shutdown(wait=exc_type is None)
 
     def shutdown(self, wait: bool = True) -> None:
         """Shutdown the worker pool.

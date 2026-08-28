@@ -10,7 +10,11 @@ import argparse
 import ast
 import base64
 import collections.abc
-from concurrent.futures import as_completed
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    Future,
+    wait,
+)
 from dataclasses import (
     dataclass,
     field,
@@ -38,6 +42,7 @@ import tempfile
 import tokenize
 from typing import (
     TYPE_CHECKING,
+    Any,
 )
 import zlib
 
@@ -165,6 +170,9 @@ from pytest_gremlins.xdist_options import (
 if TYPE_CHECKING:
     from collections.abc import (
         Callable,
+        Iterable,
+        Iterator,
+        Mapping,
         Sequence,
     )
 
@@ -501,6 +509,91 @@ def _read_parallel_config(config: pytest.Config, xdist_workers: int | None = Non
         return True, xdist_workers
     parallel_enabled: bool = config.option.gremlin_parallel or cli_workers is not None
     return parallel_enabled, cli_workers
+
+
+# How long result collection may go without a single mutant completing before it
+# is called wedged. A healthy run completes mutants continuously, and each one is
+# already bounded by the worker's own per-mutant subprocess timeout, so this is
+# an order of magnitude clear of any legitimate gap. It bounds the gap between
+# results, never the length of the run.
+STALL_TIMEOUT_SECONDS = 300.0
+
+# Enough outstanding IDs to show a pattern, not enough to bury what follows.
+_MAX_OUTSTANDING_IDS_REPORTED = 20
+
+
+class GremlinCollectionStalledError(RuntimeError):
+    """Raised when result collection stops making progress.
+
+    Distinct from a mutant failing or timing out, both of which are already
+    reported per mutant. This means the run stopped answering at all.
+    """
+
+
+def _report_stalled_collection(outstanding: list[str], stall_timeout: float) -> None:
+    """Name the mutants the run is waiting on, and how to look one up.
+
+    Written to stderr because stdout carries the progress line, and the last
+    thing that line did was stop.
+
+    Args:
+        outstanding: Gremlin IDs that never completed.
+        stall_timeout: The deadline that elapsed, in seconds.
+    """
+    print(
+        f'\npytest-gremlins: no mutant completed in {stall_timeout:.0f}s -- {len(outstanding)} still outstanding.',
+        file=sys.stderr,
+    )
+    for gremlin_id in outstanding[:_MAX_OUTSTANDING_IDS_REPORTED]:
+        print(f'  outstanding: {gremlin_id}', file=sys.stderr)
+    if len(outstanding) > _MAX_OUTSTANDING_IDS_REPORTED:
+        print(f'  ... and {len(outstanding) - _MAX_OUTSTANDING_IDS_REPORTED} more', file=sys.stderr)
+    print(
+        f'Investigate one with: pytest --gremlins --gremlin-explain {outstanding[0]}',
+        file=sys.stderr,
+    )
+
+
+def _as_completed_or_stalled(
+    futures: Mapping[Future[Any], str] | Iterable[Future[Any]],
+    stall_timeout: float = STALL_TIMEOUT_SECONDS,
+) -> Iterator[Future[Any]]:
+    """Yield futures as they complete, giving up if none ever does.
+
+    `as_completed` with no timeout waits for every future, so one that never
+    resolves blocks the parent for ever with nothing in the log to say which one.
+
+    The deadline applies to the gap between completions rather than to the run,
+    so a slow run is never interrupted -- only a run that has stopped answering.
+
+    Args:
+        futures: The futures to collect. A mapping of future to gremlin ID lets
+            the stall report name the mutants still outstanding.
+        stall_timeout: Seconds to allow with no completion at all.
+
+    Yields:
+        Each future, as it completes.
+
+    Raises:
+        GremlinCollectionStalledError: If no future completes within the
+            deadline.
+    """
+    gremlin_ids: dict[Future[Any], str] = (
+        dict(futures) if isinstance(futures, collections.abc.Mapping) else dict.fromkeys(futures, '<unknown>')
+    )
+
+    pending = set(gremlin_ids)
+    while pending:
+        done, pending = wait(pending, timeout=stall_timeout, return_when=FIRST_COMPLETED)
+        if not done:
+            outstanding = sorted(gremlin_ids[future] for future in pending)
+            _report_stalled_collection(outstanding, stall_timeout)
+            for future in pending:
+                future.cancel()
+            raise GremlinCollectionStalledError(
+                f'{len(outstanding)} mutant(s) never completed; no result arrived in {stall_timeout:.0f}s'
+            )
+        yield from done
 
 
 def _get_session() -> GremlinSession | None:
@@ -4077,7 +4170,7 @@ def _run_parallel_mutation_testing(  # pragma: no cover
             futures[future] = gremlin.gremlin_id
 
         # Collect results as they complete
-        for future in as_completed(futures):
+        for future in _as_completed_or_stalled(futures):
             gremlin_id = futures[future]
             try:
                 worker_result = future.result()
