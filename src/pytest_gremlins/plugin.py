@@ -219,6 +219,7 @@ class GremlinSession:
     cache: IncrementalCache | None = None
     source_hashes: dict[str, str] = field(default_factory=dict)
     test_hashes: dict[str, str] = field(default_factory=dict)
+    test_file_hash_cache: dict[str, str | None] = field(default_factory=dict)
     cache_hits: int = 0
     cache_misses: int = 0
     parallel_enabled: bool = False
@@ -2538,6 +2539,41 @@ def _run_mutation_testing(
     return results
 
 
+def _test_hash_for_file(test_file: str, gremlin_session: GremlinSession) -> str | None:
+    """Find the content hash of the test file a node ID names.
+
+    Memoised for the session. `test_hashes` is populated during collection and
+    fixed by the time the mutation loop runs, so the answer for a given path
+    cannot change within a run — and the caller asks the same question once per
+    covering test, per gremlin, on both cache paths. Without the memo the work
+    is quadratic in (gremlins x test files), single-threaded on the main thread,
+    and paid after every mutant has already finished.
+
+    The match is deliberately the same loose `endswith`-or-substring test as
+    before. Tightening it would change which cached results are considered
+    still valid, which is a separate decision from doing it once.
+
+    Args:
+        test_file: The path part of a test node ID.
+        gremlin_session: The current gremlin session with test metadata.
+
+    Returns:
+        The file's content hash, or None when no test file matches.
+    """
+    cache = gremlin_session.test_file_hash_cache
+    if test_file in cache:
+        return cache[test_file]
+
+    found: str | None = None
+    for file_path, file_hash in gremlin_session.test_hashes.items():
+        if file_path.endswith(test_file) or test_file in file_path:
+            found = file_hash
+            break
+
+    cache[test_file] = found
+    return found
+
+
 def _build_test_hashes_for_gremlin(
     selected_tests: Sequence[str],
     gremlin_session: GremlinSession,
@@ -2572,11 +2608,9 @@ def _build_test_hashes_for_gremlin(
                 node_id = candidates[0]
 
         if '::' in node_id:
-            test_file = node_id.split('::')[0]
-            for file_path, file_hash in gremlin_session.test_hashes.items():
-                if file_path.endswith(test_file) or test_file in file_path:
-                    test_hashes[test_name] = file_hash
-                    break
+            file_hash = _test_hash_for_file(node_id.split('::')[0], gremlin_session)
+            if file_hash is not None:
+                test_hashes[test_name] = file_hash
 
     return test_hashes
 
