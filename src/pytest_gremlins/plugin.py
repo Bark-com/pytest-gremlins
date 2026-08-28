@@ -51,6 +51,7 @@ from pytest_gremlins.config import (
     discover_by_project_name,
     discover_by_setup_cfg,
     discover_source_paths,
+    DEFAULT_COVERAGE_TIMEOUT_SECONDS,
     load_config,
     merge_configs,
 )
@@ -225,6 +226,7 @@ class GremlinSession:
     parallel_workers: int | None = None
     batch_enabled: bool = False
     batch_size: int = 10
+    coverage_timeout: int = DEFAULT_COVERAGE_TIMEOUT_SECONDS
     xdist_item_ids: list[str] | None = None
     xdist_active: bool = False
     xdist_workers: int | None = None
@@ -499,6 +501,14 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help='Number of gremlins per batch (default: 10)',
     )
     group.addoption(
+        '--gremlin-coverage-timeout',
+        action='store',
+        type=int,
+        default=None,
+        dest='gremlin_coverage_timeout',
+        help='Seconds the coverage pre-scan may run before it is treated as hung (default: 120)',
+    )
+    group.addoption(
         '--gremlins-html-dir',
         action='store',
         default=None,
@@ -590,10 +600,11 @@ def _init_cache(
 
 def _extract_toml_fields(
     merged_config: object,
-) -> tuple[bool | None, int | str | None, list[str] | None, int | None, float | None, int | None]:
+) -> tuple[bool | None, int | str | None, list[str] | None, int | None, float | None, int | None, int | None]:
     """Extract merged-config fields, guarding against test mock objects.
 
-    Returns (cache, workers, report_formats, batch_size, max_pardons_pct, max_pardons) from
+    Returns (cache, workers, report_formats, batch_size, max_pardons_pct, max_pardons,
+    coverage_timeout) from
     merged_config only when it is a real GremlinConfig instance; otherwise returns
     all-None so pytest_configure falls back to argparse defaults.
 
@@ -601,11 +612,11 @@ def _extract_toml_fields(
         merged_config: The result of merge_configs (GremlinConfig or a test mock).
 
     Returns:
-        Tuple of (cache, workers, report, batch_size, max_pardons_pct, max_pardons),
-        each None if unset.
+        Tuple of (cache, workers, report, batch_size, max_pardons_pct, max_pardons,
+        coverage_timeout), each None if unset.
     """
     if not isinstance(merged_config, GremlinConfig):
-        return None, None, None, None, None, None
+        return None, None, None, None, None, None, None
     return (
         merged_config.cache,
         merged_config.workers,
@@ -613,6 +624,7 @@ def _extract_toml_fields(
         merged_config.batch_size,
         merged_config.max_pardons_pct,
         merged_config.max_pardons,
+        merged_config.coverage_timeout,
     )
 
 
@@ -666,6 +678,7 @@ def pytest_configure(config: pytest.Config) -> None:
         cli_batch_size=config.option.gremlin_batch_size,
         cli_max_pardons_pct=cli_max_pardons_pct,
         cli_max_pardons=cli_max_pardons,
+        cli_coverage_timeout=getattr(config.option, 'gremlin_coverage_timeout', None),
     )
 
     registry = get_default_registry()
@@ -711,6 +724,7 @@ def pytest_configure(config: pytest.Config) -> None:
         toml_batch_size,
         toml_max_pardons_pct,
         toml_max_pardons,
+        toml_coverage_timeout,
     ) = _extract_toml_fields(merged_config)
 
     # Cache: merge_configs already resolved CLI-beats-TOML; default False
@@ -743,6 +757,9 @@ def pytest_configure(config: pytest.Config) -> None:
             parallel_workers=parallel_workers,
             batch_enabled=batch_enabled,
             batch_size=batch_size,
+            coverage_timeout=(
+                toml_coverage_timeout if toml_coverage_timeout is not None else DEFAULT_COVERAGE_TIMEOUT_SECONDS
+            ),
             coverage_mode=_detect_coverage_mode(config),
             strict_pardons=bool(config.option.strict_pardons),
             audit_pardons=bool(config.option.gremlin_audit_pardons),
@@ -1704,6 +1721,7 @@ def _collect_coverage(gremlin_session: GremlinSession, rootdir: Path) -> None:
         name_to_node_ids=gremlin_session.test_name_to_node_ids,
         coverage_include=coverage_include or None,
         preserved_addopts=gremlin_session.preserved_addopts,
+        timeout=gremlin_session.coverage_timeout,
     )
 
     if not coverage_data:
@@ -1867,6 +1885,7 @@ def _run_tests_with_coverage(
     name_to_node_ids: dict[str, list[str]] | None = None,
     coverage_include: list[str] | None = None,
     preserved_addopts: str = '',
+    timeout: int = DEFAULT_COVERAGE_TIMEOUT_SECONDS,
 ) -> dict[str, dict[str, list[int]]]:
     """Run all tests with coverage collection using dynamic contexts.
 
@@ -1894,6 +1913,12 @@ def _run_tests_with_coverage(
             (see :func:`_addopts_without_cov`), passed through as ``-o addopts=<...>``
             so collection-affecting options such as ``--import-mode=importlib`` survive
             into the subprocess. Defaults to ``''`` (clear all addopts).
+        timeout: Seconds the sub-run may take before it is treated as hung. A
+            guard rather than a budget: the sub-run is one pass of the whole
+            selected suite under coverage instrumentation, and a suite grows
+            into a fixed cap rather than hitting it on day one. Configurable
+            with ``--gremlin-coverage-timeout`` or
+            ``[tool.pytest-gremlins].coverage_timeout``.
 
     Returns:
         Dict mapping test names to their coverage data (file path -> lines).
@@ -1939,7 +1964,7 @@ def _run_tests_with_coverage(
             cmd,
             cwd=str(rootdir),
             capture_output=True,
-            timeout=120,
+            timeout=timeout,
             check=False,
         )
     except subprocess.TimeoutExpired:  # pragma: no cover
