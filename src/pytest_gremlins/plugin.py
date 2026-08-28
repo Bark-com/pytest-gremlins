@@ -1975,6 +1975,10 @@ def _addopts_without_cov(raw_addopts: list[str]) -> str:
     return ' '.join(shlex.quote(token) for token in kept)
 
 
+# coverage.py's only cores that record dynamic contexts are the trace cores.
+_CONTEXT_CAPABLE_COVERAGE_CORE = 'ctrace'
+
+
 def _run_tests_with_coverage(
     test_node_ids: list[str],
     rootdir: Path,
@@ -2056,6 +2060,15 @@ def _run_tests_with_coverage(
         '-q',
     ]
 
+    # The pre-scan's whole purpose is the per-test map, and that comes from
+    # coverage.py's dynamic contexts, which its sysmon core cannot record --
+    # "Dynamic contexts aren't supported with core=sysmon; context data may be
+    # incomplete", then it carries on. A project that sets COVERAGE_CORE=sysmon
+    # for its own coverage runs, where it is cheaper and contexts are not
+    # needed, hands it to the pre-scan by inheritance without choosing to, and
+    # the tests it drops are simply never run against their gremlins.
+    prescan_env = {**os.environ, 'COVERAGE_CORE': _CONTEXT_CAPABLE_COVERAGE_CORE}
+
     try:
         subprocess.run(  # Intentional: runs pytest test commands
             cmd,
@@ -2063,6 +2076,7 @@ def _run_tests_with_coverage(
             capture_output=True,
             timeout=timeout,
             check=False,
+            env=prescan_env,
         )
     except subprocess.TimeoutExpired:  # pragma: no cover
         coveragerc_path.unlink(missing_ok=True)
