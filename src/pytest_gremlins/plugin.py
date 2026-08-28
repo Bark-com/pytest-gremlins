@@ -1226,8 +1226,40 @@ def _prepend_injection(body: list[ast.stmt], injection_nodes: list[ast.stmt]) ->
     return body[:insert_position] + injection_nodes + body[insert_position:]
 
 
+def _import_root(file_path: Path, rootdir: Path) -> Path:
+    """Find the directory a source file is imported relative to.
+
+    That is the distribution directory — the nearest ancestor holding a
+    ``pyproject.toml`` — because that is what goes on ``sys.path``. In a
+    single-distribution project it is rootdir, so the answer is unchanged. In a
+    workspace it is the member directory, which is the whole point: the
+    directories between rootdir and the member are not part of any import name,
+    and one of them usually holds a hyphen.
+
+    The walk stops at rootdir so it can never escape the project under test.
+
+    Args:
+        file_path: Path to the Python file.
+        rootdir: Root directory of the project.
+
+    Returns:
+        The directory the file's import name is relative to.
+    """
+    for directory in file_path.parents:
+        if (directory / 'pyproject.toml').is_file():
+            return directory
+        if directory == rootdir:
+            break
+    return rootdir
+
+
 def _path_to_module_name(file_path: Path, rootdir: Path) -> str:
-    """Convert a file path to a Python module name.
+    """Convert a file path to the module name Python imports it as.
+
+    The name has to be the real import name: the instrumented-source finder is
+    keyed by it, so a name no import can produce means the finder never fires,
+    the mutation never activates, and the gremlin is scored against pristine
+    source.
 
     Args:
         file_path: Path to the Python file.
@@ -1235,11 +1267,13 @@ def _path_to_module_name(file_path: Path, rootdir: Path) -> str:
 
     Returns:
         The module name (e.g., 'package.module' for 'package/module.py').
-        For src/ layout projects, the 'src' prefix is stripped since it's
-        a layout convention, not part of the import path.
+        A 'src' prefix is stripped, since it is a layout convention rather than
+        part of the import path, and a package is named by its directory rather
+        than by its ``__init__``.
     """
+    import_root = _import_root(file_path, rootdir)
     try:
-        relative = file_path.relative_to(rootdir)
+        relative = file_path.relative_to(import_root)
     except ValueError:
         relative = Path(file_path.name)
 
@@ -1249,6 +1283,10 @@ def _path_to_module_name(file_path: Path, rootdir: Path) -> str:
     # Python imports use 'mypackage.module', not 'src.mypackage.module'.
     if parts and parts[0] == 'src':
         parts = parts[1:]
+
+    # A package is imported by its directory name, not as 'mypackage.__init__'.
+    if parts and parts[-1] == '__init__':
+        parts = parts[:-1]
 
     return '.'.join(parts)
 
@@ -1266,18 +1304,7 @@ def _build_gremlin_module_map(
     Returns:
         Dictionary mapping gremlin IDs to dotted module names.
     """
-    gremlin_module_map: dict[str, str] = {}
-    for gremlin in gremlins:
-        file_path = Path(gremlin.file_path)
-        try:
-            rel_path = file_path.relative_to(rootdir)
-        except ValueError:
-            rel_path = Path(file_path.name)
-        module_name = str(rel_path).replace(os.sep, '.').removesuffix('.py')
-        if module_name.endswith('.__init__'):
-            module_name = module_name.removesuffix('.__init__')
-        gremlin_module_map[gremlin.gremlin_id] = module_name
-    return gremlin_module_map
+    return {gremlin.gremlin_id: _path_to_module_name(Path(gremlin.file_path), rootdir) for gremlin in gremlins}
 
 
 def _get_bootstrap_script() -> str:
