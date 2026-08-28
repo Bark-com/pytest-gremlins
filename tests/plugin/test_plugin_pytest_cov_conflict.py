@@ -23,6 +23,7 @@ import warnings
 
 import coverage
 import pytest
+from _pytest.outcomes import Exit
 
 from pytest_gremlins.plugin import (
     GremlinSession,
@@ -84,15 +85,15 @@ class DescribeCoverageSubprocessClearsAddopts:
 
 
 @pytest.mark.small
-class DescribeEmptyCoverageWarning:
-    """Verify a warning is emitted when coverage collection returns empty data."""
+class DescribeEmptyCoverageCollection:
+    """An empty coverage map stops the run instead of warning about it."""
 
-    def it_warns_when_coverage_data_is_empty(self, tmp_path: Path) -> None:
-        """A warning fires when _run_tests_with_coverage returns an empty dict."""
+    def it_stops_the_run_when_tests_were_collected(self, tmp_path: Path) -> None:
+        """Selection is impossible, so any score would be meaningless."""
         session = GremlinSession(
             enabled=True,
             gremlins=[],
-            test_node_ids={},
+            test_node_ids={'tests/test_a.py::test_one': 'tests/test_a.py::test_one'},
         )
 
         with (
@@ -100,10 +101,21 @@ class DescribeEmptyCoverageWarning:
                 'pytest_gremlins.plugin._run_tests_with_coverage',
                 return_value={},
             ),
-            pytest.warns(
-                UserWarning,
-                match='Coverage collection returned no data',
-            ),
+            pytest.raises(Exit, match='no tests would run against any mutation'),
+        ):
+            _collect_coverage(session, tmp_path)
+
+    def it_does_nothing_when_no_tests_were_collected(self, tmp_path: Path) -> None:
+        """An empty map is the correct answer when there was nothing to measure."""
+        session = GremlinSession(
+            enabled=True,
+            gremlins=[],
+            test_node_ids={},
+        )
+
+        with patch(
+            'pytest_gremlins.plugin._run_tests_with_coverage',
+            return_value={},
         ):
             _collect_coverage(session, tmp_path)
 
