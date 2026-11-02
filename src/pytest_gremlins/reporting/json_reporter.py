@@ -22,6 +22,12 @@ if TYPE_CHECKING:
     )
 
 
+# Statuses whose entries keep `selected_tests`. A surviving, timed-out or
+# errored mutant is one somebody will open and debug, and the covering tests are
+# what they need. A zapped mutant is a line in a rollup.
+_DEBUGGABLE_STATUSES = frozenset({'survived', 'timeout', 'error'})
+
+
 class JsonReporter:
     """Reporter that produces JSON output for CI integration.
 
@@ -55,6 +61,18 @@ class JsonReporter:
         }
     """
 
+    def __init__(self, *, selected_tests_for_all_results: bool = False) -> None:
+        """Create a reporter.
+
+        Args:
+            selected_tests_for_all_results: Keep `selected_tests` on every
+                result, including zapped ones. Off by default: coverage-guided
+                selection picks thousands of tests for a widely covered line, so
+                on a large suite that list dominates the document and the report
+                runs to gigabytes.
+        """
+        self._selected_tests_for_all_results = selected_tests_for_all_results
+
     def to_json(self, score: MutationScore, *, skipped_files: dict[str, str] | None = None) -> str:
         """Convert mutation score to JSON string.
 
@@ -80,7 +98,14 @@ class JsonReporter:
             output_path: Path to the output JSON file.
             skipped_files: Paths and reasons for files that could not be instrumented.
         """
-        output_path.write_text(self.to_json(score, skipped_files=skipped_files))
+        # Streamed rather than built as one string and handed to write_text:
+        # a large report is already a big dict, and rendering it to a single
+        # string keeps both resident at the same time.
+        data = self._build_report_data(score)
+        if skipped_files:
+            data['skipped_files'] = skipped_files
+        with output_path.open('w', encoding='utf-8') as handle:
+            json.dump(data, handle, indent=2)
 
     def _build_report_data(self, score: MutationScore) -> JsonReport:
         """Build the complete report data structure.
@@ -168,6 +193,8 @@ class JsonReporter:
             entry['error_output'] = result.error_output
         if result.execution_time_ms is not None:
             entry['execution_time_ms'] = result.execution_time_ms
-        if result.selected_tests:
+        if result.selected_tests and (
+            self._selected_tests_for_all_results or result.status.value in _DEBUGGABLE_STATUSES
+        ):
             entry['selected_tests'] = result.selected_tests
         return entry
